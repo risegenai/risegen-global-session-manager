@@ -14,25 +14,51 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
+
+	"github.com/gocql/gocql"
+	"github.com/risegenai/risegen-global-session-manager/internal/cassandra"
+	"github.com/risegenai/risegen-global-session-manager/internal/handlers"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	logger.Info("gsm: starting")
 
-	addr := getEnv("GSM_ADDR", ":8091")
+	hosts := strings.Split(cassandra.GetEnv("GSM_CASSANDRA_HOSTS", "192.168.31.162:9042"), ",")
+	keyspace := cassandra.GetEnv("GSM_CASSANDRA_KEYSPACE", "global_sessions")
+
+	var cassSess *gocql.Session
+	cassReady := false
+	if sess, err := cassandra.Connect(hosts, keyspace, logger); err != nil {
+		logger.Warn("gsm: cassandra unavailable, starting without persistence", "error", err)
+	} else {
+		cassSess = sess
+		cassReady = true
+		defer sess.Close()
+		if err := cassandra.RunMigrations(sess, logger); err != nil {
+			logger.Warn("gsm: migration warning", "error", err)
+		}
+	}
+
+	router := handlers.NewRouter(&handlers.Router{
+		Cassandra: cassSess,
+		Logger:    logger,
+	})
+
+	addr := cassandra.GetEnv("GSM_ADDR", ":8091")
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      http.HandlerFunc(healthzHandler),
+		Handler:      router,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
 
 	go func() {
-		logger.Info("gsm: listening", "addr", addr)
+		logger.Info("gsm: listening", "addr", addr, "cassandra", cassReady)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("gsm: serve error", "error", err)
 			os.Exit(1)
@@ -50,16 +76,4 @@ func main() {
 		logger.Error("gsm: shutdown error", "error", err)
 	}
 	logger.Info("gsm: stopped")
-}
-
-func healthzHandler(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"ok":true}`))
-}
-
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
