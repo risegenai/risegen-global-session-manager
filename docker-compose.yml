@@ -10,8 +10,15 @@ services:
       GSM_GLOBAL_ACCOUNTS_URL: "${GSM_GLOBAL_ACCOUNTS_URL:-http://global:8090}"
     ports:
       - "8091:8091"
+    networks:
+      - risegen-shared
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8091/healthz"]
       interval: 5s
       timeout: 5s
       retries: 10
+
+networks:
+  risegen-shared:
+    external: true
+    name: "${GSM_NETWORK:-risegen-shared}"

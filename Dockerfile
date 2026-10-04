@@ -8,6 +8,6 @@ RUN CGO_ENABLED=0 go build -o /gsm-server ./cmd/gsm-server
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates
 COPY --from=build /gsm-server /gsm-server
-COPY migrations/ /migrations/
+COPY --from=build /src/internal/cassandra/migrations/ /migrations/
 EXPOSE 8091
 ENTRYPOINT ["/gsm-server"]

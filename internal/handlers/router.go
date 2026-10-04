@@ -3,6 +3,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/gocql/gocql"
 	"github.com/google/uuid"
+
+	"github.com/risegenai/risegen-global-session-manager/internal/metrics"
 )
 
 // Router holds the GSM's HTTP handler dependencies.
@@ -22,6 +25,7 @@ type Router struct {
 func NewRouter(r *Router) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", r.handleHealthz)
+	mux.HandleFunc("GET /metrics", r.handleMetrics)
 
 	// Global-scope sessions
 	mux.HandleFunc("POST /v1/global/sessions", r.handleCreateGlobalSession)
@@ -45,7 +49,30 @@ func NewRouter(r *Router) http.Handler {
 }
 
 func (r *Router) handleHealthz(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	cassandraStatus := "connected"
+	httpStatus := http.StatusOK
+
+	if err := r.Cassandra.Query("SELECT now() FROM system.local").Exec(); err != nil {
+		cassandraStatus = "disconnected"
+		httpStatus = http.StatusServiceUnavailable
+		r.Logger.Error("healthz: cassandra unreachable", "error", err)
+	}
+
+	writeJSON(w, httpStatus, map[string]any{
+		"ok":        cassandraStatus == "connected",
+		"cassandra": cassandraStatus,
+	})
+}
+
+func (r *Router) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	fmt.Fprintf(w, "gsm_sessions_created_total %d\n", metrics.Global.SessionsCreated.Load())
+	fmt.Fprintf(w, "gsm_events_appended_total %d\n", metrics.Global.EventsAppended.Load())
+	fmt.Fprintf(w, "gsm_publications_received_total %d\n", metrics.Global.PublicationsRecv.Load())
+	fmt.Fprintf(w, "gsm_publications_rejected_total %d\n", metrics.Global.PublicationsRej.Load())
+	fmt.Fprintf(w, "gsm_fanout_calls_total %d\n", metrics.Global.FanoutCalls.Load())
+	fmt.Fprintf(w, "gsm_fanout_errors_total %d\n", metrics.Global.FanoutErrors.Load())
+	fmt.Fprintf(w, "gsm_rejected_inbound_total %d\n", metrics.Global.RejectedInbound.Load())
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +107,8 @@ func (r *Router) handleCreateGlobalSession(w http.ResponseWriter, req *http.Requ
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cassandra_write_failed"})
 		return
 	}
+
+	metrics.Global.SessionsCreated.Add(1)
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"scope_id":   scopeID,
@@ -238,6 +267,8 @@ func (r *Router) handleAppendEvents(w http.ResponseWriter, req *http.Request) {
 		 WHERE scope_id = ? AND session_id = ?`,
 		n, now, scopeID, sessionID,
 	).Exec()
+
+	metrics.Global.EventsAppended.Add(int64(n))
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"first_seq": firstSeq,
@@ -403,23 +434,217 @@ func (r *Router) handleHeartbeat(w http.ResponseWriter, req *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
-// Aggregation (stubs — full implementation in Wave 3)
+// Aggregation
 // ---------------------------------------------------------------------------
 
 func (r *Router) handleAggregatedSessions(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": []any{}, "note": "aggregation_wave_3"})
+	accountID := req.URL.Query().Get("account_id")
+	scope := req.URL.Query().Get("scope")
+	status := req.URL.Query().Get("status")
+
+	if accountID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_account_id"})
+		return
+	}
+
+	// Find all scopes for this account.
+	var scopeIDs []string
+	iter := r.Cassandra.Query(
+		`SELECT scope_id FROM global_sessions.scope_registry WHERE account_id = ? ALLOW FILTERING`,
+		accountID,
+	).Iter()
+	var sid string
+	for iter.Scan(&sid) {
+		scopeIDs = append(scopeIDs, sid)
+	}
+	_ = iter.Close()
+
+	var allSessions []map[string]any
+	for _, sc := range scopeIDs {
+		if scope != "" && sc != scope {
+			continue
+		}
+		var query string
+		var args []any
+		if status != "" {
+			query = `SELECT scope_id, session_id, title, created_at, updated_at, turn_count, event_count, status
+			 FROM global_sessions.session_index WHERE scope_id = ? AND status = ?`
+			args = []any{sc, status}
+		} else {
+			query = `SELECT scope_id, session_id, title, created_at, updated_at, turn_count, event_count, status
+			 FROM global_sessions.session_index WHERE scope_id = ?`
+			args = []any{sc}
+		}
+		sessIter := r.Cassandra.Query(query, args...).Iter()
+		var ssID, title, st string
+		var createdAt, updatedAt time.Time
+		var turnCount, eventCount int
+		for sessIter.Scan(&ssID, nil, &title, &createdAt, &updatedAt, &turnCount, &eventCount, &st) {
+			allSessions = append(allSessions, map[string]any{
+				"scope_id":    sc,
+				"session_id":  ssID,
+				"title":       title,
+				"created_at":  createdAt,
+				"updated_at":  updatedAt,
+				"turn_count":  turnCount,
+				"event_count": eventCount,
+				"status":      st,
+			})
+		}
+		_ = sessIter.Close()
+	}
+
+	if allSessions == nil {
+		allSessions = []map[string]any{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": allSessions, "count": len(allSessions)})
 }
 
 func (r *Router) handleAggregatedSession(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"note": "aggregation_wave_3"})
+	scopeID := req.PathValue("scope_id")
+	sessionID := req.PathValue("session_id")
+	if scopeID == "" || sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_scope_id_or_session_id"})
+		return
+	}
+
+	var title, status string
+	var createdAt, updatedAt time.Time
+	var turnCount, eventCount int
+	err := r.Cassandra.Query(
+		`SELECT title, created_at, updated_at, turn_count, event_count, status
+		 FROM global_sessions.session_index WHERE scope_id = ? AND session_id = ?`,
+		scopeID, sessionID,
+	).Scan(&title, &createdAt, &updatedAt, &turnCount, &eventCount, &status)
+	if err == gocql.ErrNotFound {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session_not_found"})
+		return
+	}
+	if err != nil {
+		r.Logger.Error("aggregated session", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cassandra_read_failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"scope_id":    scopeID,
+		"session_id":  sessionID,
+		"title":       title,
+		"created_at":  createdAt,
+		"updated_at":  updatedAt,
+		"turn_count":  turnCount,
+		"event_count": eventCount,
+		"status":      status,
+	})
 }
 
 // ---------------------------------------------------------------------------
-// Publication inbound (stub — full implementation in Wave 3)
+// Publication inbound
 // ---------------------------------------------------------------------------
 
 func (r *Router) handlePublication(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusAccepted, map[string]any{"note": "publication_wave_3"})
+	metrics.Global.PublicationsRecv.Add(1)
+
+	var env struct {
+		ScopeID            string    `json:"scope_id"`
+		SessionID          string    `json:"session_id"`
+		Title              string    `json:"title"`
+		CreatedAt          time.Time `json:"created_at"`
+		UpdatedAt          time.Time `json:"updated_at"`
+		TurnCount          int       `json:"turn_count"`
+		EventCount         int       `json:"event_count"`
+		ContentDigest      string    `json:"content_digest"`
+		Status             string    `json:"status"`
+		BaseServiceVersion int       `json:"base_service_version"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&env); err != nil {
+		metrics.Global.PublicationsRej.Add(1)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
+		return
+	}
+	if env.ScopeID == "" || env.SessionID == "" {
+		metrics.Global.PublicationsRej.Add(1)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing_scope_id_or_session_id"})
+		return
+	}
+
+	// Validate scope exists and is active.
+	var scopeStatus string
+	var registeredVersion int
+	err := r.Cassandra.Query(
+		`SELECT status, base_service_version FROM global_sessions.scope_registry WHERE scope_id = ?`,
+		env.ScopeID,
+	).Scan(&scopeStatus, &registeredVersion)
+	if err == gocql.ErrNotFound {
+		metrics.Global.PublicationsRej.Add(1)
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "scope_not_found"})
+		return
+	}
+	if err != nil {
+		r.Logger.Error("publication: scope lookup", "error", err)
+		metrics.Global.PublicationsRej.Add(1)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cassandra_read_failed"})
+		return
+	}
+	if scopeStatus != "active" {
+		metrics.Global.PublicationsRej.Add(1)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "scope_inactive"})
+		return
+	}
+
+	// Check version compatibility (GSM version is 1).
+	gsmVersion := 1
+	pubVersion := env.BaseServiceVersion
+	if pubVersion == 0 {
+		pubVersion = registeredVersion
+	}
+	if pubVersion > gsmVersion {
+		// Incompatible — reject to rejected_inbound.
+		payload, _ := json.Marshal(env)
+		r.Cassandra.Query(
+			`INSERT INTO global_sessions.rejected_inbound (scope_id, ts, event_id, reason, payload)
+			 VALUES (?, ?, ?, ?, ?)`,
+			env.ScopeID, time.Now().UTC(), uuid.New().String(),
+			fmt.Sprintf("incompatible_version: publisher=%d gsm=%d", pubVersion, gsmVersion),
+			string(payload),
+		).Exec()
+		metrics.Global.PublicationsRej.Add(1)
+		metrics.Global.RejectedInbound.Add(1)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "incompatible_version"})
+		return
+	}
+
+	// Upsert into session_index.
+	sid, err := uuid.Parse(env.SessionID)
+	if err != nil {
+		metrics.Global.PublicationsRej.Add(1)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_session_id"})
+		return
+	}
+	now := time.Now().UTC()
+	if env.CreatedAt.IsZero() {
+		env.CreatedAt = now
+	}
+	if env.UpdatedAt.IsZero() {
+		env.UpdatedAt = now
+	}
+	if env.Status == "" {
+		env.Status = "active"
+	}
+
+	err = r.Cassandra.Query(
+		`INSERT INTO global_sessions.session_index
+		 (scope_id, session_id, title, created_at, updated_at, turn_count, event_count, content_digest, status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		env.ScopeID, sid, env.Title, env.CreatedAt, env.UpdatedAt,
+		env.TurnCount, env.EventCount, env.ContentDigest, env.Status,
+	).Exec()
+	if err != nil {
+		r.Logger.Error("publication: upsert session_index", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cassandra_write_failed"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"scope_id": env.ScopeID, "session_id": env.SessionID, "status": "published"})
 }
 
 // ---------------------------------------------------------------------------
