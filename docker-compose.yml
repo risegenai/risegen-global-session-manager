@@ -3,22 +3,15 @@ services:
     build: .
     restart: unless-stopped
     environment:
-      GSM_ADDR: ":8091"
+      GSM_ADDR: ":8093"
       GSM_CASSANDRA_HOSTS: "${GSM_CASSANDRA_HOSTS:-192.168.31.162:9042}"
       GSM_CASSANDRA_KEYSPACE: "${GSM_CASSANDRA_KEYSPACE:-global_sessions}"
       GSM_JWT_SIGNING_KEY: "${GSM_JWT_SIGNING_KEY:-dev-only-gsm-jwt-key}"
       GSM_GLOBAL_ACCOUNTS_URL: "${GSM_GLOBAL_ACCOUNTS_URL:-http://global:8090}"
     ports:
-      - "8091:8091"
-    networks:
-      - risegen-shared
+      - "8093:8093"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8091/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8093/healthz"]
       interval: 5s
       timeout: 5s
       retries: 10
-
-networks:
-  risegen-shared:
-    external: true
-    name: "${GSM_NETWORK:-risegen-shared}"

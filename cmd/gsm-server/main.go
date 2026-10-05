@@ -33,17 +33,16 @@ func main() {
 
 	sess, err := cassandra.Connect(cassandraHosts, cassandraKeyspace, logger)
 	if err != nil {
-		logger.Error("gsm: cassandra connect failed", "error", err)
-		os.Exit(1)
-	}
-	defer sess.Close()
-
-	if err := cassandra.RunMigrations(sess, logger); err != nil {
-		logger.Error("gsm: migrations failed", "error", err)
-		os.Exit(1)
+		logger.Warn("gsm: cassandra unavailable, starting without persistence", "error", err)
+	} else {
+		defer sess.Close()
+		if err := cassandra.RunMigrations(sess, logger); err != nil {
+			logger.Warn("gsm: migration warning", "error", err)
+		}
 	}
 
-	// HTTP router
+	// HTTP router — pass nil session if Cassandra is unavailable;
+	// healthz reports status, data endpoints return 503.
 	router := handlers.NewRouter(&handlers.Router{
 		Cassandra: sess,
 		Logger:    logger,
