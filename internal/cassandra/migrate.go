@@ -64,13 +64,30 @@ func RunMigrations(sess *gocql.Session, logger *slog.Logger) error {
 	return nil
 }
 
-func execCQL(sess *gocql.Session, cql string, logger *slog.Logger) error {
-	stmts := strings.Split(cql, ";")
-	for _, stmt := range stmts {
-		stmt = strings.TrimSpace(stmt)
-		if stmt == "" || strings.HasPrefix(stmt, "--") {
-			continue
+// cqlStatements drops line comments before splitting on ';'. A comment
+// such as "edge);" must not become a statement boundary, and a chunk that
+// starts with "--" must not swallow the CREATE that follows it.
+func cqlStatements(cql string) []string {
+	var b strings.Builder
+	for _, line := range strings.Split(cql, "\n") {
+		if i := strings.Index(line, "--"); i >= 0 {
+			line = line[:i]
 		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	var out []string
+	for _, stmt := range strings.Split(b.String(), ";") {
+		stmt = strings.TrimSpace(stmt)
+		if stmt != "" {
+			out = append(out, stmt)
+		}
+	}
+	return out
+}
+
+func execCQL(sess *gocql.Session, cql string, logger *slog.Logger) error {
+	for _, stmt := range cqlStatements(cql) {
 		if err := sess.Query(stmt).Exec(); err != nil {
 			// Log and continue — idempotent statements may fail on
 			// re-run (e.g. keyspace already exists with different
