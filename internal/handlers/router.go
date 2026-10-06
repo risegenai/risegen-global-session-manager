@@ -21,6 +21,12 @@ type Router struct {
 	Logger    *slog.Logger
 }
 
+// cqlUUID converts a google UUID into the type the Cassandra driver marshals.
+// Passing uuid.UUID directly fails with "can not marshal uuid.UUID into uuid".
+func cqlUUID(id uuid.UUID) gocql.UUID {
+	return gocql.UUID(id)
+}
+
 // NewRouter builds the GSM HTTP mux.
 func NewRouter(r *Router) http.Handler {
 	mux := http.NewServeMux()
@@ -81,8 +87,9 @@ func (r *Router) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 
 func (r *Router) handleCreateGlobalSession(w http.ResponseWriter, req *http.Request) {
 	var body struct {
-		Service string `json:"service"`
-		Title   string `json:"title"`
+		Service   string `json:"service"`
+		Title     string `json:"title"`
+		SessionID string `json:"session_id"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
@@ -93,14 +100,24 @@ func (r *Router) handleCreateGlobalSession(w http.ResponseWriter, req *http.Requ
 	}
 
 	scopeID := "global:" + body.Service
+	// The caller may own the session identity (ADR 0027: channels own their
+	// session_id). Accept a client-supplied UUID; otherwise mint one.
 	sessionID := uuid.New()
+	if body.SessionID != "" {
+		parsed, err := uuid.Parse(body.SessionID)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_session_id"})
+			return
+		}
+		sessionID = parsed
+	}
 	now := time.Now().UTC()
 
 	err := r.Cassandra.Query(
 		`INSERT INTO global_sessions.session_index
 		 (scope_id, session_id, title, created_at, updated_at, turn_count, event_count, content_digest, status)
 		 VALUES (?, ?, ?, ?, ?, 0, 0, '', 'active')`,
-		scopeID, sessionID, body.Title, now, now,
+		scopeID, cqlUUID(sessionID), body.Title, now, now,
 	).Exec()
 	if err != nil {
 		r.Logger.Error("create session", "error", err)
@@ -207,34 +224,21 @@ func (r *Router) handleAppendEvents(w http.ResponseWriter, req *http.Request) {
 	}
 
 	n := len(body.Events)
+	// seq is a clustering key, so it cannot be incremented in place. Read the
+	// current maximum and append after it. Concurrent appends to the same
+	// session are serialized by the caller's session lock (Gen sends one turn
+	// at a time per session).
 	var lastSeq int64
-	applied, err := r.Cassandra.Query(
-		`UPDATE global_sessions.global_session_events
-		 SET seq = seq + ? WHERE scope_id = ? AND session_id = ?
-		 IF EXISTS`,
-		n, scopeID, sessionID,
-	).ScanCAS(&lastSeq)
-	if err != nil {
-		r.Logger.Error("append events: seq allocation", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "seq_allocation_failed"})
+	err = r.Cassandra.Query(
+		`SELECT seq FROM global_sessions.global_session_events
+		 WHERE scope_id = ? AND session_id = ?
+		 ORDER BY seq DESC LIMIT 1`,
+		scopeID, sessionID,
+	).Scan(&lastSeq)
+	if err != nil && err != gocql.ErrNotFound {
+		r.Logger.Error("append events: read max seq", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "seq_read_failed"})
 		return
-	}
-	if !applied {
-		// Counter row doesn't exist yet — initialize it.
-		// Use a simpler approach: read max seq and increment.
-		var maxSeq int64
-		err := r.Cassandra.Query(
-			`SELECT seq FROM global_sessions.global_session_events
-			 WHERE scope_id = ? AND session_id = ?
-			 ORDER BY seq DESC LIMIT 1`,
-			scopeID, sessionID,
-		).Scan(&maxSeq)
-		if err != nil && err != gocql.ErrNotFound {
-			r.Logger.Error("append events: read max seq", "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "seq_read_failed"})
-			return
-		}
-		lastSeq = maxSeq
 	}
 
 	firstSeq := lastSeq + 1
@@ -251,7 +255,7 @@ func (r *Router) handleAppendEvents(w http.ResponseWriter, req *http.Request) {
 			`INSERT INTO global_sessions.global_session_events
 			 (scope_id, session_id, seq, event_id, event_type, turn_id, payload, ts)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			scopeID, sessionID, seq, eventID, ev.EventType, turnID, ev.Payload, now,
+			scopeID, sessionID, seq, cqlUUID(eventID), ev.EventType, turnID, ev.Payload, now,
 		).Exec()
 		if err != nil {
 			r.Logger.Error("append events: insert", "error", err, "seq", seq)
@@ -336,12 +340,12 @@ func (r *Router) handleListEvents(w http.ResponseWriter, req *http.Request) {
 
 func (r *Router) handleRegisterScope(w http.ResponseWriter, req *http.Request) {
 	var body struct {
-		ScopeID             string `json:"scope_id"`
-		AccountID           string `json:"account_id"`
-		NexusInstanceID     string `json:"nexus_instance_id"`
-		BaseServiceVersion  int    `json:"base_service_version"`
-		Endpoint            string `json:"endpoint"`
-		CredentialID        string `json:"credential_id"`
+		ScopeID            string `json:"scope_id"`
+		AccountID          string `json:"account_id"`
+		NexusInstanceID    string `json:"nexus_instance_id"`
+		BaseServiceVersion int    `json:"base_service_version"`
+		Endpoint           string `json:"endpoint"`
+		CredentialID       string `json:"credential_id"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_json"})
@@ -359,7 +363,7 @@ func (r *Router) handleRegisterScope(w http.ResponseWriter, req *http.Request) {
 		`INSERT INTO global_sessions.scope_registry
 		 (scope_id, account_id, nexus_instance_id, base_service_version, endpoint, credential_id, last_heartbeat, status)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, 'active')`,
-		body.ScopeID, accountID, nexusInstanceID, body.BaseServiceVersion,
+		body.ScopeID, cqlUUID(accountID), cqlUUID(nexusInstanceID), body.BaseServiceVersion,
 		body.Endpoint, body.CredentialID, time.Now().UTC(),
 	).Exec()
 	if err != nil {
@@ -603,7 +607,7 @@ func (r *Router) handlePublication(w http.ResponseWriter, req *http.Request) {
 		r.Cassandra.Query(
 			`INSERT INTO global_sessions.rejected_inbound (scope_id, ts, event_id, reason, payload)
 			 VALUES (?, ?, ?, ?, ?)`,
-			env.ScopeID, time.Now().UTC(), uuid.New().String(),
+			env.ScopeID, time.Now().UTC(), cqlUUID(uuid.New()),
 			fmt.Sprintf("incompatible_version: publisher=%d gsm=%d", pubVersion, gsmVersion),
 			string(payload),
 		).Exec()
@@ -635,7 +639,7 @@ func (r *Router) handlePublication(w http.ResponseWriter, req *http.Request) {
 		`INSERT INTO global_sessions.session_index
 		 (scope_id, session_id, title, created_at, updated_at, turn_count, event_count, content_digest, status)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		env.ScopeID, sid, env.Title, env.CreatedAt, env.UpdatedAt,
+		env.ScopeID, cqlUUID(sid), env.Title, env.CreatedAt, env.UpdatedAt,
 		env.TurnCount, env.EventCount, env.ContentDigest, env.Status,
 	).Exec()
 	if err != nil {
