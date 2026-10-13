@@ -35,6 +35,7 @@ func NewRouter(r *Router) http.Handler {
 
 	// Global-scope sessions
 	mux.HandleFunc("POST /v1/global/sessions", r.handleCreateGlobalSession)
+	mux.HandleFunc("GET /v1/global/sessions/recent", r.handleRecentGlobalSessions)
 	mux.HandleFunc("GET /v1/global/sessions/{id}", r.handleGetGlobalSession)
 	mux.HandleFunc("POST /v1/global/sessions/{id}/events", r.handleAppendEvents)
 	mux.HandleFunc("GET /v1/global/sessions/{id}/events", r.handleListEvents)
@@ -133,6 +134,58 @@ func (r *Router) handleCreateGlobalSession(w http.ResponseWriter, req *http.Requ
 		"title":      body.Title,
 		"created_at": now,
 	})
+}
+
+// handleRecentGlobalSessions returns the most recent sessions across all
+// global scopes, newest-first. This is a low-frequency admin/debug endpoint;
+// it uses ALLOW FILTERING which is acceptable for this use case.
+func (r *Router) handleRecentGlobalSessions(w http.ResponseWriter, req *http.Request) {
+	limit := 20
+	var scopeID, sessionID, title, status string
+	var createdAt, updatedAt time.Time
+	var turnCount, eventCount int
+	var contentDigest string
+
+	iter := r.Cassandra.Query(
+		`SELECT scope_id, session_id, title, created_at, updated_at, turn_count, event_count, content_digest, status
+		 FROM global_sessions.session_index LIMIT ? ALLOW FILTERING`,
+		limit,
+	).Iter()
+
+	type sessionEntry struct {
+		ScopeID       string    `json:"scope_id"`
+		SessionID     string    `json:"session_id"`
+		Title         string    `json:"title"`
+		CreatedAt     time.Time `json:"created_at"`
+		UpdatedAt     time.Time `json:"updated_at"`
+		TurnCount     int       `json:"turn_count"`
+		EventCount    int       `json:"event_count"`
+		ContentDigest string    `json:"content_digest"`
+		Status        string    `json:"status"`
+	}
+	var sessions []sessionEntry
+	for iter.Scan(&scopeID, &sessionID, &title, &createdAt, &updatedAt, &turnCount, &eventCount, &contentDigest, &status) {
+		sessions = append(sessions, sessionEntry{
+			ScopeID:       scopeID,
+			SessionID:     sessionID,
+			Title:         title,
+			CreatedAt:     createdAt,
+			UpdatedAt:     updatedAt,
+			TurnCount:     turnCount,
+			EventCount:    eventCount,
+			ContentDigest: contentDigest,
+			Status:        status,
+		})
+	}
+	if err := iter.Close(); err != nil {
+		r.Logger.Error("recent sessions", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cassandra_read_failed"})
+		return
+	}
+	if sessions == nil {
+		sessions = []sessionEntry{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
 }
 
 func (r *Router) handleGetGlobalSession(w http.ResponseWriter, req *http.Request) {
