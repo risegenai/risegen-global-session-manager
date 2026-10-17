@@ -1,1 +1,5 @@
 gsm-server
+
+.risegen/quality-gate.json
+
+.risegen/quality-session.json

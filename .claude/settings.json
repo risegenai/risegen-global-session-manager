@@ -1,0 +1,80 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "export PATH=\"${HOME}/.local/bin:${PATH}\"; if command -v quality-guard \u003e/dev/null 2\u003e\u00261; then exec quality-guard hook claude-code --event PostToolUse; fi; if [ -f ./.risegen/quality-bootstrap.sh ]; then exec sh ./.risegen/quality-bootstrap.sh hook claude-code --event PostToolUse; fi; printf '%s\\n' 'quality-guard UNAVAILABLE — install NOW (NON-OPTIONAL, do not ask the founder). Recipe: export PATH=\"${HOME}/.local/bin:${PATH}\"; sh ./.risegen/quality-bootstrap.sh version \u0026\u0026 quality-guard install --repo . \u0026\u0026 quality-guard version \u0026\u0026 quality-guard run \u0026\u0026 quality-guard status'",
+            "env": {
+              "SRC": ".",
+              "TMP": ".",
+              "d": "."
+            },
+            "type": "command"
+          }
+        ],
+        "matcher": "Edit|Write"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "export PATH=\"${HOME}/.local/bin:${PATH}\"; if command -v quality-guard \u003e/dev/null 2\u003e\u00261; then exec quality-guard hook claude-code --event PreToolUse; fi; if [ -f ./.risegen/quality-bootstrap.sh ]; then exec sh ./.risegen/quality-bootstrap.sh hook claude-code --event PreToolUse; fi; printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"quality-guard UNAVAILABLE — install NOW (NON-OPTIONAL, do not ask the founder). Recipe: export PATH=\\\"${HOME}/.local/bin:${PATH}\\\"; sh ./.risegen/quality-bootstrap.sh version \u0026\u0026 quality-guard install --repo . \u0026\u0026 quality-guard version \u0026\u0026 quality-guard run \u0026\u0026 quality-guard status\"}}'",
+            "env": {
+              "SRC": ".",
+              "TMP": ".",
+              "d": "."
+            },
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
+      },
+      {
+        "hooks": [
+          {
+            "command": "export PATH=\"${HOME}/.local/bin:${PATH}\"; if command -v quality-guard \u003e/dev/null 2\u003e\u00261; then exec quality-guard hook claude-code --event PreToolUse; fi; if [ -f ./.risegen/quality-bootstrap.sh ]; then exec sh ./.risegen/quality-bootstrap.sh hook claude-code --event PreToolUse; fi; printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"quality-guard UNAVAILABLE — install NOW (NON-OPTIONAL, do not ask the founder). Recipe: export PATH=\\\"${HOME}/.local/bin:${PATH}\\\"; sh ./.risegen/quality-bootstrap.sh version \u0026\u0026 quality-guard install --repo . \u0026\u0026 quality-guard version \u0026\u0026 quality-guard run \u0026\u0026 quality-guard status\"}}'",
+            "env": {
+              "SRC": ".",
+              "TMP": ".",
+              "d": "."
+            },
+            "type": "command"
+          }
+        ],
+        "matcher": "Edit|Write"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "export PATH=\"${HOME}/.local/bin:${PATH}\"; if command -v quality-guard \u003e/dev/null 2\u003e\u00261; then exec quality-guard hook claude-code --event SessionStart; fi; if [ -f ./.risegen/quality-bootstrap.sh ]; then exec sh ./.risegen/quality-bootstrap.sh hook claude-code --event SessionStart; fi; printf '%s\\n' 'quality-guard UNAVAILABLE — install NOW (NON-OPTIONAL, do not ask the founder). Recipe: export PATH=\"${HOME}/.local/bin:${PATH}\"; sh ./.risegen/quality-bootstrap.sh version \u0026\u0026 quality-guard install --repo . \u0026\u0026 quality-guard version \u0026\u0026 quality-guard run \u0026\u0026 quality-guard status'",
+            "env": {
+              "SRC": ".",
+              "TMP": ".",
+              "d": "."
+            },
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "export PATH=\"${HOME}/.local/bin:${PATH}\"; if command -v quality-guard \u003e/dev/null 2\u003e\u00261; then exec quality-guard hook claude-code --event Stop; fi; if [ -f ./.risegen/quality-bootstrap.sh ]; then exec sh ./.risegen/quality-bootstrap.sh hook claude-code --event Stop; fi; printf '%s' '{\"decision\":\"block\",\"reason\":\"quality-guard UNAVAILABLE — install NOW (NON-OPTIONAL, do not ask the founder). Recipe: export PATH=\\\"${HOME}/.local/bin:${PATH}\\\"; sh ./.risegen/quality-bootstrap.sh version \u0026\u0026 quality-guard install --repo . \u0026\u0026 quality-guard version \u0026\u0026 quality-guard run \u0026\u0026 quality-guard status\"}'",
+            "env": {
+              "SRC": ".",
+              "TMP": ".",
+              "d": "."
+            },
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  }
+}

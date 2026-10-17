@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# quality-guard pre-commit backstop (harness-independent)
+set -euo pipefail
+export PATH="${HOME}/.local/bin:${PATH}"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+if ! command -v quality-guard >/dev/null 2>&1; then
+  if [ -f "$ROOT/.risegen/quality-bootstrap.sh" ]; then
+    sh "$ROOT/.risegen/quality-bootstrap.sh" version >/dev/null 2>&1 || true
+  fi
+fi
+if ! command -v quality-guard >/dev/null 2>&1; then
+  echo "quality-guard: BLOCKED — binary missing. Install NOW (NON-OPTIONAL):" >&2
+  echo "  sh $ROOT/.risegen/quality-bootstrap.sh version" >&2
+  echo "  # or: cd holding-central-ai-assets/quality-guard && go build -o ~/.local/bin/quality-guard ./cmd/quality-guard" >&2
+  exit 1
+fi
+# Simulate commit gate via a synthetic bash event
+export QG_GIT_HOOK=1
+if ! python3 - <<'PY'; then exit 1; fi
+import json,os,subprocess,sys
+payload={"session_id":"git-hook","cwd":os.getcwd(),"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git commit"}}
+p=subprocess.run(["quality-guard","hook","claude-code","--event","PreToolUse"],input=json.dumps(payload).encode(),capture_output=True)
+sys.stderr.buffer.write(p.stderr)
+out=(p.stdout or b"").decode()
+if "permissionDecision" in out and "deny" in out:
+    print(out)
+    sys.exit(1)
+sys.exit(0)
+PY

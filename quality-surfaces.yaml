@@ -1,0 +1,26 @@
+version: 1
+# Quality surface map — edit for this repository.
+# Production edits require paired tests + green: quality-guard run
+surfaces:
+  - id: go
+    prod_globs: ["**/*.go"]
+    test_globs: ["**/*_test.go"]
+    gate_cmd: "go test ./... -count=1"
+    blast: normal
+  - id: python
+    prod_globs: ["**/*.py"]
+    test_globs: ["**/test_*.py", "**/*_test.py", "tests/**/*.py"]
+    gate_cmd: "pytest -q"
+    blast: normal
+  - id: typescript
+    prod_globs: ["**/*.{ts,tsx,js,jsx}"]
+    test_globs: ["**/*.{test,spec}.{ts,tsx,js,jsx}"]
+    gate_cmd: "npm test"
+    blast: normal
+  - id: docs-only
+    prod_globs: ["docs/**", "memory-bank/**", "**/*.md"]
+    test_globs: []
+    gate_cmd: "true"
+    blast: none
+exemptions:
+  generated: ["**/vendor/**", "**/*.gen.go", "**/node_modules/**"]

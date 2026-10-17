@@ -317,13 +317,39 @@ func (r *Router) handleAppendEvents(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	// Update session_index counters.
-	r.Cassandra.Query(
-		`UPDATE global_sessions.session_index
-		 SET event_count = event_count + ?, turn_count = turn_count + 1, updated_at = ?
+	// event_count and turn_count are plain ints. Cassandra rejects
+	// `col = col + n` unless the column is a counter, and a counter cannot
+	// share this row with title and timestamps. Write the absolute totals.
+	// A failure here must not change the HTTP status: the event rows are
+	// already stored, and a non-2xx makes the Android poster retry the same
+	// body and insert duplicates.
+	turnIDs := make([]string, 0, n)
+	iter := r.Cassandra.Query(
+		`SELECT turn_id FROM global_sessions.global_session_events
 		 WHERE scope_id = ? AND session_id = ?`,
-		n, now, scopeID, sessionID,
-	).Exec()
+		scopeID, sessionID,
+	).Iter()
+	var tid gocql.UUID
+	for iter.Scan(&tid) {
+		turnIDs = append(turnIDs, tid.String())
+	}
+	eventCount := eventCountFromSeq(firstSeq, n)
+	var indexErr error
+	if readErr := iter.Close(); readErr != nil {
+		r.Logger.Error("append events: read turn ids", "error", readErr)
+		indexErr = r.Cassandra.Query(
+			sessionIndexEventCountCQL,
+			eventCount, now, scopeID, sessionID,
+		).Exec()
+	} else {
+		indexErr = r.Cassandra.Query(
+			sessionIndexCountCQL,
+			eventCount, countDistinctTurnIDs(turnIDs), now, scopeID, sessionID,
+		).Exec()
+	}
+	if indexErr != nil {
+		r.Logger.Error("append events: index update", "error", indexErr)
+	}
 
 	metrics.Global.EventsAppended.Add(int64(n))
 

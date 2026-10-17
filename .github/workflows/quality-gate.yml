@@ -1,0 +1,50 @@
+# managed-by: quality-guard install v1.4.2 (do not hand-edit; re-run install)
+name: quality-gate
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+concurrency:
+  group: quality-gate-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.22" }
+      - name: Build quality-guard (skips with a warning when the secret is absent)
+        id: build
+        run: |
+          if [ -z "${{ secrets.HOLDING_ASSETS_TOKEN }}" ]; then
+            echo "::warning::HOLDING_ASSETS_TOKEN is not set — quality-gate skipped (set the secret to run the full gate)"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          set -euo pipefail
+          git clone --depth 1 https://x-access-token:${{ secrets.HOLDING_ASSETS_TOKEN }}@github.com/marcvlima/holding-central-ai-assets.git .qg-src
+          (cd .qg-src/quality-guard && go build -trimpath -o "$RUNNER_TEMP/quality-guard" ./cmd/quality-guard)
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          quality-guard version
+          echo "present=true" >> "$GITHUB_OUTPUT"
+      - name: Validate surface map (lint)
+        if: steps.build.outputs.present == 'true'
+        run: quality-guard validate --lint
+      - name: Gate
+        if: steps.build.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            quality-guard run --since "origin/${{ github.base_ref }}" --shadow
+          else
+            quality-guard run --full --shadow
+          fi
+      - name: Marker
+        if: always()
+        run: cat .risegen/quality-gate.json || true
