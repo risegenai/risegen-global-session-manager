@@ -202,11 +202,20 @@ func (r *Router) handleGetGlobalSession(w http.ResponseWriter, req *http.Request
 	var turnCount, eventCount int
 	var contentDigest string
 
-	err := r.Cassandra.Query(
-		`SELECT scope_id, session_id, title, created_at, updated_at, turn_count, event_count, content_digest, status
-		 FROM global_sessions.session_index WHERE scope_id LIKE 'global:%' AND session_id = ? ALLOW FILTERING`,
-		sessionID,
-	).Scan(&scopeID, nil, &title, &createdAt, &updatedAt, &turnCount, &eventCount, &contentDigest, &status)
+	err := r.Cassandra.Query(sessionScopeByIDCQL, sessionID).Scan(&scopeID)
+	if err == gocql.ErrNotFound {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session_not_found"})
+		return
+	}
+	if err != nil {
+		r.Logger.Error("get session", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cassandra_read_failed"})
+		return
+	}
+
+	err = r.Cassandra.Query(sessionByPrimaryKeyCQL, scopeID, sessionID).Scan(
+		&title, &createdAt, &updatedAt, &turnCount, &eventCount, &contentDigest, &status,
+	)
 
 	if err == gocql.ErrNotFound {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session_not_found"})

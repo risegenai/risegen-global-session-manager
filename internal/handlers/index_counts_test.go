@@ -21,3 +21,14 @@ func TestSessionIndexCountsAreAbsolute(t *testing.T) {
 		t.Fatal(countDistinctTurnIDs([]string{"t1", "t1", "t2", ""}))
 	}
 }
+
+func TestSessionLookupDoesNotUseLike(t *testing.T) {
+	for _, q := range []string{sessionScopeByIDCQL, sessionByPrimaryKeyCQL} {
+		if strings.Contains(strings.ToUpper(q), "LIKE") {
+			t.Fatalf("LIKE is rejected on session_index.scope_id: %s", q)
+		}
+	}
+	if !strings.Contains(sessionByPrimaryKeyCQL, "WHERE scope_id = ? AND session_id = ?") {
+		t.Fatal(sessionByPrimaryKeyCQL)
+	}
+}

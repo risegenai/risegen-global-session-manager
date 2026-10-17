@@ -1,5 +1,9 @@
 package handlers
 
+const sessionScopeByIDCQL = `SELECT scope_id FROM global_sessions.session_index WHERE session_id = ? ALLOW FILTERING`
+
+const sessionByPrimaryKeyCQL = `SELECT title, created_at, updated_at, turn_count, event_count, content_digest, status FROM global_sessions.session_index WHERE scope_id = ? AND session_id = ?`
+
 // sessionIndexCountCQL assigns absolute counter columns. Cassandra rejects
 // event_count = event_count + n on these plain int columns.
 const sessionIndexCountCQL = `UPDATE global_sessions.session_index
