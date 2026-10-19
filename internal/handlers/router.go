@@ -313,16 +313,30 @@ func (r *Router) handleAppendEvents(w http.ResponseWriter, req *http.Request) {
 		if turnID == "" {
 			turnID = uuid.New().String()
 		}
+		storedPayload, audio, writeColumn := prepareEarAudio(ev.EventType, ev.Payload)
 		err := r.Cassandra.Query(
 			`INSERT INTO global_sessions.global_session_events
 			 (scope_id, session_id, seq, event_id, event_type, turn_id, payload, ts)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			scopeID, sessionID, seq, cqlUUID(eventID), ev.EventType, turnID, ev.Payload, now,
+			scopeID, sessionID, seq, cqlUUID(eventID), ev.EventType, turnID, storedPayload, now,
 		).Exec()
 		if err != nil {
 			r.Logger.Error("append events: insert", "error", err, "seq", seq)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "event_insert_failed"})
 			return
+		}
+		if writeColumn {
+			if audioErr := r.Cassandra.Query(
+				earAudioColumnCQL, audio, scopeID, sessionID, seq,
+			).Exec(); audioErr != nil {
+				r.Logger.Error("append events: audio column write", "error", audioErr, "seq", seq)
+				if markErr := r.Cassandra.Query(
+					`UPDATE global_sessions.global_session_events SET payload = ? WHERE scope_id = ? AND session_id = ? AND seq = ?`,
+					markEarAudioStoreFailed(storedPayload), scopeID, sessionID, seq,
+				).Exec(); markErr != nil {
+					r.Logger.Error("append events: audio failure mark", "error", markErr, "seq", seq)
+				}
+			}
 		}
 	}
 
@@ -388,7 +402,7 @@ func (r *Router) handleListEvents(w http.ResponseWriter, req *http.Request) {
 	}
 
 	iter := r.Cassandra.Query(
-		`SELECT seq, event_id, event_type, turn_id, payload, ts
+		`SELECT seq, event_id, event_type, turn_id, payload, ts, audio_base64
 		 FROM global_sessions.global_session_events
 		 WHERE scope_id = ? AND session_id = ?
 		 ORDER BY seq ASC`,
@@ -399,14 +413,15 @@ func (r *Router) handleListEvents(w http.ResponseWriter, req *http.Request) {
 	var seq int64
 	var eventID, eventType, turnID, payload string
 	var ts time.Time
+	var audioColumn string
 
-	for iter.Scan(&seq, &eventID, &eventType, &turnID, &payload, &ts) {
+	for iter.Scan(&seq, &eventID, &eventType, &turnID, &payload, &ts, &audioColumn) {
 		events = append(events, map[string]any{
 			"seq":        seq,
 			"event_id":   eventID,
 			"event_type": eventType,
 			"turn_id":    turnID,
-			"payload":    payload,
+			"payload":    mergeEarAudio(eventType, payload, audioColumn),
 			"ts":         ts,
 		})
 	}
