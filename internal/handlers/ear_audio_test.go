@@ -113,8 +113,20 @@ func TestMergeEarAudio_ColumnExpired(t *testing.T) {
 }
 
 func TestEarAudioColumnCQL_HasTTLAndNoPayload(t *testing.T) {
-	if !strings.Contains(earAudioColumnCQL, "USING TTL 604800") {
+	ttlIdx := strings.Index(earAudioColumnCQL, "USING TTL 604800")
+	if ttlIdx < 0 {
 		t.Fatalf("earAudioColumnCQL must contain USING TTL 604800: %s", earAudioColumnCQL)
+	}
+	setIdx := strings.Index(earAudioColumnCQL, " SET ")
+	if setIdx < 0 {
+		t.Fatalf("earAudioColumnCQL must contain ' SET ': %s", earAudioColumnCQL)
+	}
+	whereIdx := strings.Index(earAudioColumnCQL, " WHERE ")
+	if whereIdx < 0 {
+		t.Fatalf("earAudioColumnCQL must contain ' WHERE ': %s", earAudioColumnCQL)
+	}
+	if !(ttlIdx < setIdx && setIdx < whereIdx) {
+		t.Fatalf("earAudioColumnCQL must order USING TTL before SET before WHERE: %s", earAudioColumnCQL)
 	}
 	if strings.Contains(earAudioColumnCQL, "payload") {
 		t.Fatalf("earAudioColumnCQL must not reference the payload column: %s", earAudioColumnCQL)

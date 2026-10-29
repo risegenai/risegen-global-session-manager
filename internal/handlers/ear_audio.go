@@ -6,7 +6,7 @@ import "encoding/json"
 // expires after this duration; the event row remains.
 const EarAudioTTLSeconds = 604800
 
-const earAudioColumnCQL = `UPDATE global_sessions.global_session_events SET audio_base64 = ? WHERE scope_id = ? AND session_id = ? AND seq = ? USING TTL 604800`
+const earAudioColumnCQL = `UPDATE global_sessions.global_session_events USING TTL 604800 SET audio_base64 = ? WHERE scope_id = ? AND session_id = ? AND seq = ?`
 
 // prepareEarAudio extracts audio_base64 from an ear.audio payload so it can
 // be stored in a dedicated column with a TTL. The returned stored payload has
