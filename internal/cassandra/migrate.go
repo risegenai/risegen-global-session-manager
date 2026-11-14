@@ -18,9 +18,16 @@ import (
 var migrationsFS embed.FS
 
 // Connect creates a gocql session connected to the shared Cassandra cluster.
+//
+// The cluster is deliberately NOT bound to the service keyspace: that keyspace
+// is created by the migrations, which run right after this session is
+// established. Binding it here made CreateSession() fail on a fresh cluster
+// (the keyspace does not exist yet), which left the GSM with a nil session and
+// never ran the migration that creates it — a permanent deadlock. Every
+// statement in this service is fully qualified (global_sessions.<table>), so
+// the binding is optional.
 func Connect(hosts []string, keyspace string, logger *slog.Logger) (*gocql.Session, error) {
 	cluster := gocql.NewCluster(hosts...)
-	cluster.Keyspace = keyspace
 	cluster.Consistency = gocql.Quorum
 	cluster.PoolConfig.HostSelectionPolicy = gocql.TokenAwareHostPolicy(gocql.DCAwareRoundRobinPolicy(""))
 

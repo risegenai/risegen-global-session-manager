@@ -34,32 +34,49 @@ func NewRouter(r *Router) http.Handler {
 	mux.HandleFunc("GET /metrics", r.handleMetrics)
 
 	// Global-scope sessions
-	mux.HandleFunc("POST /v1/global/sessions", r.handleCreateGlobalSession)
-	mux.HandleFunc("GET /v1/global/sessions/recent", r.handleRecentGlobalSessions)
-	mux.HandleFunc("GET /v1/global/sessions/{id}", r.handleGetGlobalSession)
-	mux.HandleFunc("POST /v1/global/sessions/{id}/events", r.handleAppendEvents)
-	mux.HandleFunc("GET /v1/global/sessions/{id}/events", r.handleListEvents)
+	mux.HandleFunc("POST /v1/global/sessions", r.requireCassandra(r.handleCreateGlobalSession))
+	mux.HandleFunc("GET /v1/global/sessions/recent", r.requireCassandra(r.handleRecentGlobalSessions))
+	mux.HandleFunc("GET /v1/global/sessions/{id}", r.requireCassandra(r.handleGetGlobalSession))
+	mux.HandleFunc("POST /v1/global/sessions/{id}/events", r.requireCassandra(r.handleAppendEvents))
+	mux.HandleFunc("GET /v1/global/sessions/{id}/events", r.requireCassandra(r.handleListEvents))
 
 	// Scope registry
-	mux.HandleFunc("POST /v1/scopes", r.handleRegisterScope)
-	mux.HandleFunc("GET /v1/scopes/{scope_id}", r.handleGetScope)
-	mux.HandleFunc("PUT /v1/scopes/{scope_id}/heartbeat", r.handleHeartbeat)
+	mux.HandleFunc("POST /v1/scopes", r.requireCassandra(r.handleRegisterScope))
+	mux.HandleFunc("GET /v1/scopes/{scope_id}", r.requireCassandra(r.handleGetScope))
+	mux.HandleFunc("PUT /v1/scopes/{scope_id}/heartbeat", r.requireCassandra(r.handleHeartbeat))
 
 	// Aggregation
-	mux.HandleFunc("GET /v1/aggregated/sessions", r.handleAggregatedSessions)
-	mux.HandleFunc("GET /v1/aggregated/sessions/{scope_id}/{session_id}", r.handleAggregatedSession)
+	mux.HandleFunc("GET /v1/aggregated/sessions", r.requireCassandra(r.handleAggregatedSessions))
+	mux.HandleFunc("GET /v1/aggregated/sessions/{scope_id}/{session_id}", r.requireCassandra(r.handleAggregatedSession))
 
 	// Publication inbound
-	mux.HandleFunc("POST /v1/publication/session", r.handlePublication)
+	mux.HandleFunc("POST /v1/publication/session", r.requireCassandra(r.handlePublication))
 
 	return mux
+}
+
+// requireCassandra answers 503 when the service started without persistence
+// (main.go passes a nil session when Cassandra was unreachable at boot).
+// Without it a nil *gocql.Session panics inside the handler, which the edge
+// surfaces as a 502 and which trips the healthcheck.
+func (r *Router) requireCassandra(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if r.Cassandra == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "cassandra_unavailable"})
+			return
+		}
+		h(w, req)
+	}
 }
 
 func (r *Router) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	cassandraStatus := "connected"
 	httpStatus := http.StatusOK
 
-	if err := r.Cassandra.Query("SELECT now() FROM system.local").Exec(); err != nil {
+	if r.Cassandra == nil {
+		cassandraStatus = "disconnected"
+		httpStatus = http.StatusServiceUnavailable
+	} else if err := r.Cassandra.Query("SELECT now() FROM system.local").Exec(); err != nil {
 		cassandraStatus = "disconnected"
 		httpStatus = http.StatusServiceUnavailable
 		r.Logger.Error("healthz: cassandra unreachable", "error", err)
@@ -114,10 +131,11 @@ func (r *Router) handleCreateGlobalSession(w http.ResponseWriter, req *http.Requ
 	}
 	now := time.Now().UTC()
 
+	// IF NOT EXISTS keeps a re-create idempotent: channels re-post the create
+	// when they restart, and a plain INSERT would reset the live counters
+	// (turn_count/event_count) of a session that is still being appended to.
 	err := r.Cassandra.Query(
-		`INSERT INTO global_sessions.session_index
-		 (scope_id, session_id, title, created_at, updated_at, turn_count, event_count, content_digest, status)
-		 VALUES (?, ?, ?, ?, ?, 0, 0, '', 'active')`,
+		createSessionIndexCQL,
 		scopeID, cqlUUID(sessionID), body.Title, now, now,
 	).Exec()
 	if err != nil {
@@ -279,9 +297,18 @@ func (r *Router) handleAppendEvents(w http.ResponseWriter, req *http.Request) {
 		`SELECT scope_id FROM global_sessions.session_index WHERE session_id = ? ALLOW FILTERING`,
 		sessionID,
 	).Scan(&scopeID)
+	if err == gocql.ErrNotFound {
+		// The channel appended before its create landed. This is a client
+		// error (404), but it must not be confused with a read failure: the
+		// client drops 4xx permanently, so a masked transient error would
+		// silently lose events.
+		r.Logger.Warn("append events: unknown session", "session_id", sessionID)
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session_not_found"})
+		return
+	}
 	if err != nil {
 		r.Logger.Error("append events: resolve scope", "error", err)
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session_not_found"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cassandra_read_failed"})
 		return
 	}
 
