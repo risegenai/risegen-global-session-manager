@@ -22,6 +22,15 @@ func TestSessionIndexCountsAreAbsolute(t *testing.T) {
 	}
 }
 
+func TestCreateSessionIndexCQLIsIdempotent(t *testing.T) {
+	if !strings.Contains(createSessionIndexCQL, "IF NOT EXISTS") {
+		t.Fatalf("create must be idempotent so a re-create does not reset live counters: %s", createSessionIndexCQL)
+	}
+	if !strings.Contains(createSessionIndexCQL, "global_sessions.session_index") {
+		t.Fatalf("create must target global_sessions.session_index: %s", createSessionIndexCQL)
+	}
+}
+
 func TestSessionLookupDoesNotUseLike(t *testing.T) {
 	for _, q := range []string{sessionScopeByIDCQL, sessionByPrimaryKeyCQL} {
 		if strings.Contains(strings.ToUpper(q), "LIKE") {

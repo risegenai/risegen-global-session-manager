@@ -5,7 +5,7 @@ surfaces:
   - id: go
     prod_globs: ["**/*.go"]
     test_globs: ["**/*_test.go"]
-    gate_cmd: "go test ./... -count=1"
+    gate_cmd: "go test ./..."
     blast: normal
   - id: python
     prod_globs: ["**/*.py"]
