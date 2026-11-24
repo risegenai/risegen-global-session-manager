@@ -9,6 +9,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -225,6 +226,20 @@ func (r *Router) forwardLiveFrame(sessionID string, frame []byte) {
 	}
 }
 
+// jsonNumber renders a JSON-RPC id as a number when it is one and as a
+// string otherwise, so an error frame echoes the request id unchanged.
+func jsonNumber(raw json.RawMessage) any {
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return string(raw)
+}
+
 // handleLiveSessionAttach upgrades a client WebSocket onto a live session.
 // The bearer token's account must match the account the session's daemon
 // registered under; anything else is refused with 403 session_not_yours.
@@ -277,6 +292,40 @@ func (r *Router) handleLiveSessionAttach(w http.ResponseWriter, req *http.Reques
 		var f liveFrame
 		if json.Unmarshal(raw, &f) != nil || f.SessionID != sessionID {
 			continue
+		}
+		// A client response carrying result.outcome is a permission answer:
+		// record it (first decision wins) and drop any later answer for the
+		// same request instead of forwarding it.
+		var rpc struct {
+			ID     json.RawMessage `json:"id"`
+			Result struct {
+				Outcome struct {
+					Outcome  string `json:"outcome"`
+					OptionID string `json:"optionId"`
+				} `json:"outcome"`
+			} `json:"result"`
+		}
+		if json.Unmarshal(f.Frame, &rpc) == nil && len(rpc.ID) > 0 && len(rpc.Result.Outcome.Outcome) > 0 {
+			decision := "cancelled"
+			if rpc.Result.Outcome.Outcome == "selected" {
+				decision = rpc.Result.Outcome.OptionID
+			}
+			if r.recordPermissionDecision(sessionID, fmt.Sprint(jsonNumber(rpc.ID)), decision) {
+				errFrame, _ := json.Marshal(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      jsonNumber(rpc.ID),
+					"error":   map[string]any{"code": -32000, "message": "already_decided"},
+				})
+				client.writeMu.Lock()
+				werr := client.conn.WriteMessage(websocket.TextMessage, errFrame)
+				client.writeMu.Unlock()
+				if werr != nil {
+					r.unregisterLiveClient(sessionID, client)
+					conn.Close()
+					return
+				}
+				continue
+			}
 		}
 		r.liveMu.Lock()
 		daemon := r.liveSessionOwner(sessionID)
