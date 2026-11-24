@@ -175,10 +175,14 @@ func (r *Router) liveSessionOwner(sessionID string) *liveDaemon {
 }
 
 // liveClient is an attached client connection. Writes are serialized by
-// writeMu because gorilla conns are not safe for concurrent writes.
+// writeMu because gorilla conns are not safe for concurrent writes. While
+// replaying, live frames are buffered in pending (guarded by writeMu) and
+// flushed after the history replay.
 type liveClient struct {
-	conn    *websocket.Conn
-	writeMu sync.Mutex
+	conn      *websocket.Conn
+	writeMu   sync.Mutex
+	replaying bool
+	pending   [][]byte
 }
 
 // registerLiveClient tracks an attached client connection for a session so
@@ -217,7 +221,12 @@ func (r *Router) forwardLiveFrame(sessionID string, frame []byte) {
 
 	for _, c := range clients {
 		c.writeMu.Lock()
-		err := c.conn.WriteMessage(websocket.TextMessage, frame)
+		var err error
+		if c.replaying {
+			c.pending = append(c.pending, frame)
+		} else {
+			err = c.conn.WriteMessage(websocket.TextMessage, frame)
+		}
 		c.writeMu.Unlock()
 		if err != nil {
 			r.unregisterLiveClient(sessionID, c)
@@ -243,7 +252,8 @@ func jsonNumber(raw json.RawMessage) any {
 // handleLiveSessionAttach upgrades a client WebSocket onto a live session.
 // The bearer token's account must match the account the session's daemon
 // registered under; anything else is refused with 403 session_not_yours.
-// History replay and live forwarding land with the sessions endpoints.
+// After the upgrade the session's durable history is replayed (seq ASC),
+// then live frames are forwarded.
 func (r *Router) handleLiveSessionAttach(w http.ResponseWriter, req *http.Request) {
 	sessionID := req.PathValue("id")
 	if sessionID == "" {
@@ -277,9 +287,46 @@ func (r *Router) handleLiveSessionAttach(w http.ResponseWriter, req *http.Reques
 	}
 	defer conn.Close()
 
-	client := &liveClient{conn: conn}
+	client := &liveClient{conn: conn, replaying: true}
 	r.registerLiveClient(sessionID, client)
 	defer r.unregisterLiveClient(sessionID, client)
+
+	// Replay the session's durable history before forwarding live frames
+	// (relay-session-channel.md: attach replays history, then forwards).
+	// The write lock is held for the whole replay so live frames arriving
+	// in flight are buffered in pending and flushed in order. A history
+	// failure never kills the attach: replay is skipped, pending is still
+	// flushed and the client goes live-only.
+	client.writeMu.Lock()
+	events, herr := sessionHistory(r, sessionID)
+	if herr != nil {
+		r.Logger.Warn("live attach: history replay failed", "session_id", sessionID, "error", herr)
+		events = nil
+	}
+	for _, ev := range events {
+		env, eerr := historyEnvelope(sessionID, ev)
+		if eerr != nil {
+			r.Logger.Warn("live attach: history envelope failed", "session_id", sessionID, "seq", ev.Seq, "error", eerr)
+			continue
+		}
+		if werr := conn.WriteMessage(websocket.TextMessage, env); werr != nil {
+			client.writeMu.Unlock()
+			r.unregisterLiveClient(sessionID, client)
+			conn.Close()
+			return
+		}
+	}
+	for _, frame := range client.pending {
+		if werr := conn.WriteMessage(websocket.TextMessage, frame); werr != nil {
+			client.writeMu.Unlock()
+			r.unregisterLiveClient(sessionID, client)
+			conn.Close()
+			return
+		}
+	}
+	client.pending = nil
+	client.replaying = false
+	client.writeMu.Unlock()
 
 	// Relay client frames to the owning daemon until the client or daemon
 	// goes away. Frames are forwarded unchanged (ADR 0083 §3); relay loss
