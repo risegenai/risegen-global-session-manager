@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/gocql/gocql"
@@ -19,6 +20,27 @@ import (
 type Router struct {
 	Cassandra *gocql.Session
 	Logger    *slog.Logger
+
+	// Live remote-session channel (T048).
+	liveMu                  sync.Mutex
+	liveDaemons             map[string]*liveDaemon     // machine_id -> daemon
+	liveSessions            map[string]*liveDaemon     // session_id -> owning daemon
+	liveMachineSessions     map[string]map[string]bool // machine_id -> known sessions
+	liveClients             map[string]map[*liveClient]bool // session_id -> attached clients
+	livePermissionDecisions map[permissionDecisionKey]string
+}
+
+// NewRouterWithLogger builds a Router with initialized live-channel state.
+// Tests use it so a zero-value Router never hides an uninitialized map.
+func NewRouterWithLogger(logger *slog.Logger) *Router {
+	return &Router{
+		Logger:                  logger,
+		liveDaemons:             make(map[string]*liveDaemon),
+		liveSessions:            make(map[string]*liveDaemon),
+		liveMachineSessions:     make(map[string]map[string]bool),
+		liveClients:             make(map[string]map[*liveClient]bool),
+		livePermissionDecisions: make(map[permissionDecisionKey]string),
+	}
 }
 
 // cqlUUID converts a google UUID into the type the Cassandra driver marshals.
@@ -29,6 +51,21 @@ func cqlUUID(id uuid.UUID) gocql.UUID {
 
 // NewRouter builds the GSM HTTP mux.
 func NewRouter(r *Router) http.Handler {
+	if r.liveDaemons == nil {
+		r.liveDaemons = make(map[string]*liveDaemon)
+	}
+	if r.liveSessions == nil {
+		r.liveSessions = make(map[string]*liveDaemon)
+	}
+	if r.liveMachineSessions == nil {
+		r.liveMachineSessions = make(map[string]map[string]bool)
+	}
+	if r.liveClients == nil {
+		r.liveClients = make(map[string]map[*liveClient]bool)
+	}
+	if r.livePermissionDecisions == nil {
+		r.livePermissionDecisions = make(map[permissionDecisionKey]string)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", r.handleHealthz)
 	mux.HandleFunc("GET /metrics", r.handleMetrics)
@@ -51,6 +88,11 @@ func NewRouter(r *Router) http.Handler {
 
 	// Publication inbound
 	mux.HandleFunc("POST /v1/publication/session", r.requireCassandra(r.handlePublication))
+
+	// Live remote-session channel (T048)
+	mux.HandleFunc("GET /v1/live/daemon", r.handleLiveDaemon)
+	mux.HandleFunc("GET /v1/live/sessions", r.handleLiveSessionsList)
+	mux.HandleFunc("GET /v1/live/sessions/{id}", r.handleLiveSessionAttach)
 
 	return mux
 }
