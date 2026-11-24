@@ -266,10 +266,30 @@ func (r *Router) handleLiveSessionAttach(w http.ResponseWriter, req *http.Reques
 	r.registerLiveClient(sessionID, client)
 	defer r.unregisterLiveClient(sessionID, client)
 
-	// Hold the socket open until the client or daemon goes away. Relay loss
+	// Relay client frames to the owning daemon until the client or daemon
+	// goes away. Frames are forwarded unchanged (ADR 0083 §3); relay loss
 	// never touches local sessions.
 	for {
-		if _, _, err := conn.ReadMessage(); err != nil {
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		var f liveFrame
+		if json.Unmarshal(raw, &f) != nil || f.SessionID != sessionID {
+			continue
+		}
+		r.liveMu.Lock()
+		daemon := r.liveSessionOwner(sessionID)
+		r.liveMu.Unlock()
+		if daemon == nil {
+			continue
+		}
+		daemon.sendMu.Lock()
+		werr := daemon.conn.WriteMessage(websocket.TextMessage, raw)
+		daemon.sendMu.Unlock()
+		if werr != nil {
+			r.unregisterLiveClient(sessionID, client)
+			conn.Close()
 			return
 		}
 	}
