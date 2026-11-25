@@ -18,8 +18,8 @@ type liveSessionEntry struct {
 // handleLiveSessionsList lists the live sessions owned by the bearer token's
 // account. An optional ?machine= filter restricts the list to one machine.
 func (r *Router) handleLiveSessionsList(w http.ResponseWriter, req *http.Request) {
-	tokenAccount := bearerAccount(req)
-	if tokenAccount == "" {
+	tokenAccount, err := bearerAccountJWT(req, r.JWTSigningKey)
+	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing_token"})
 		return
 	}

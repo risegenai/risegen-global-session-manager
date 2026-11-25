@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 )
 
@@ -50,19 +51,32 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// bearerAccount extracts the account from a "Bearer <token>" header. GSM
-// tokens carry the account as the first ':'-separated segment.
-func bearerAccount(req *http.Request) string {
+// bearerAccountJWT resolves the caller's account from the global session
+// JWT: HS256, signed with signingKey, Subject = account_id. Mirrors the
+// global service's parseSessionJWT (pinned HMAC + HS256 only). Any failure
+// — missing token, bad signature, wrong method, expired, empty Subject —
+// is a 401.
+func bearerAccountJWT(req *http.Request, signingKey string) (string, error) {
 	const prefix = "Bearer "
 	h := req.Header.Get("Authorization")
 	if !strings.HasPrefix(h, prefix) {
-		return ""
+		return "", fmt.Errorf("missing bearer token")
 	}
 	tok := strings.TrimPrefix(h, prefix)
-	if i := strings.IndexByte(tok, ':'); i >= 0 {
-		return tok[:i]
+	if tok == "" {
+		return "", fmt.Errorf("empty bearer token")
 	}
-	return tok
+	claims := &jwt.RegisteredClaims{}
+	parsed, err := jwt.ParseWithClaims(tok, claims, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method %v", t.Header["alg"])
+		}
+		return []byte(signingKey), nil
+	}, jwt.WithValidMethods([]string{"HS256"}))
+	if err != nil || !parsed.Valid || claims.Subject == "" {
+		return "", fmt.Errorf("invalid session JWT")
+	}
+	return claims.Subject, nil
 }
 
 // handleLiveDaemon upgrades the daemon's outbound WebSocket and registers it.
@@ -261,8 +275,8 @@ func (r *Router) handleLiveSessionAttach(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
-	tokenAccount := bearerAccount(req)
-	if tokenAccount == "" {
+	tokenAccount, err := bearerAccountJWT(req, r.JWTSigningKey)
+	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing_token"})
 		return
 	}

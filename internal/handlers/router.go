@@ -20,6 +20,10 @@ import (
 type Router struct {
 	Cassandra *gocql.Session
 	Logger    *slog.Logger
+	// JWTSigningKey is the HS256 key of the global session JWT (env
+	// GLOBAL_JWT_SIGNING_KEY); the live channel resolves the caller's
+	// account from the token's Subject.
+	JWTSigningKey string
 
 	// Live remote-session channel (T048).
 	liveMu                  sync.Mutex

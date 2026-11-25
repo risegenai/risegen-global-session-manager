@@ -15,7 +15,7 @@ import (
 // same live session and asserts that a frame the daemon sends for that
 // session reaches the attached client.
 func TestLiveFrameForwardedToAttachedClient(t *testing.T) {
-	r := NewRouterWithLogger(testLogger())
+	r := jwtRouter()
 	srv := httptest.NewServer(NewRouter(r))
 	defer srv.Close()
 
@@ -39,7 +39,7 @@ func TestLiveFrameForwardedToAttachedClient(t *testing.T) {
 
 	clientURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/live/sessions/sess-1"
 	clientConn, resp, err := dialer.Dial(clientURL, http.Header{
-		"Authorization": []string{"Bearer acct-a:secret"},
+		"Authorization": []string{"Bearer " + mintLiveJWT(t, "acct-a", time.Now().Add(time.Hour))},
 	})
 	if err != nil {
 		t.Fatalf("dial client: %v (status %v)", err, resp)
