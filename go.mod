@@ -4,12 +4,13 @@ go 1.26.7
 
 require (
 	github.com/gocql/gocql v1.7.0
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.3
 )
 
 require (
 	github.com/golang/snappy v0.0.3 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/hailocab/go-hostpool v0.0.0-20160125115350-e80d13ce29ed // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 )

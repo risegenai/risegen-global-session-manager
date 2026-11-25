@@ -50,7 +50,7 @@ func dialAttachHistory(t *testing.T, r *Router) (*websocket.Conn, *websocket.Con
 
 	clientURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/live/sessions/sess-1"
 	clientConn, resp, err := dialer.Dial(clientURL, http.Header{
-		"Authorization": []string{"Bearer acct-a:secret"},
+		"Authorization": []string{"Bearer " + mintLiveJWT(t, "acct-a", time.Now().Add(time.Hour))},
 	})
 	if err != nil {
 		t.Fatalf("dial client: %v (status %v)", err, resp)
@@ -64,7 +64,7 @@ func dialAttachHistory(t *testing.T, r *Router) (*websocket.Conn, *websocket.Con
 // the session's durable history (seq ASC, history:true) and only then the
 // live frames. Counter: history-frames = 3.
 func TestAttachReplaysHistoryBeforeLive(t *testing.T) {
-	r := NewRouterWithLogger(testLogger())
+	r := jwtRouter()
 
 	events := []historyEvent{
 		{Seq: 1, EventID: "ev-1", EventType: "session/update", TurnID: "turn-1",
@@ -138,7 +138,7 @@ func TestAttachReplaysHistoryBeforeLive(t *testing.T) {
 // the history fetch is still in flight is not lost and is delivered after
 // the replay, in order. Counter: live-frames-delivered = 1.
 func TestAttachLiveDuringReplayIsNotLost(t *testing.T) {
-	r := NewRouterWithLogger(testLogger())
+	r := jwtRouter()
 
 	release := make(chan struct{})
 	historyReaderForTest = func(*Router, string) ([]historyEvent, error) {
@@ -187,7 +187,7 @@ func TestAttachLiveDuringReplayIsNotLost(t *testing.T) {
 // (403 session_not_yours) never reads history: auth happens before the
 // upgrade and the history fetch happens after it. Counter: reader calls = 0.
 func TestAttachForeignAccountReadsNoHistory(t *testing.T) {
-	r := NewRouterWithLogger(testLogger())
+	r := jwtRouter()
 
 	var readerCalls int32
 	historyReaderForTest = func(*Router, string) ([]historyEvent, error) {
@@ -219,7 +219,7 @@ func TestAttachForeignAccountReadsNoHistory(t *testing.T) {
 
 	clientURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/live/sessions/sess-1"
 	_, resp, err := dialer.Dial(clientURL, http.Header{
-		"Authorization": []string{"Bearer acct-b:secret"},
+		"Authorization": []string{"Bearer " + mintLiveJWT(t, "acct-b", time.Now().Add(time.Hour))},
 	})
 	if err == nil {
 		t.Fatalf("dial with foreign account succeeded, want 403 session_not_yours")
@@ -236,7 +236,7 @@ func TestAttachForeignAccountReadsNoHistory(t *testing.T) {
 // with no history reader and a nil Cassandra session, an attach is live-only
 // and live frames still flow.
 func TestAttachWithoutHistorySourceIsLiveOnly(t *testing.T) {
-	r := NewRouterWithLogger(testLogger())
+	r := jwtRouter()
 	if r.Cassandra != nil {
 		t.Fatalf("test requires a nil Cassandra session, got %v", r.Cassandra)
 	}

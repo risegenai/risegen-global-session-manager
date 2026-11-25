@@ -5,12 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // TestLiveDaemonForeignAccount: a daemon registered under one account must
 // not be attachable by a token of another account — 403 session_not_yours.
 func TestLiveDaemonForeignAccount(t *testing.T) {
-	r := NewRouterWithLogger(testLogger())
+	r := jwtRouter()
 
 	daemon := &liveDaemon{
 		machineID: "machine-a",
@@ -21,7 +22,7 @@ func TestLiveDaemonForeignAccount(t *testing.T) {
 	r.liveMu.Unlock()
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/live/sessions/sess-1", nil)
-	req.Header.Set("Authorization", "Bearer token:acct-foreign")
+	req.Header.Set("Authorization", "Bearer "+mintLiveJWT(t, "acct-foreign", time.Now().Add(time.Hour)))
 	rec := httptest.NewRecorder()
 
 	// Route through the real mux so req.PathValue("id") resolves.

@@ -5,12 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // TestLiveSessionsListOnlyOwnAccount: the sessions list endpoint must return
 // only the sessions of daemons registered under the bearer token's account.
 func TestLiveSessionsListOnlyOwnAccount(t *testing.T) {
-	r := NewRouterWithLogger(testLogger())
+	r := jwtRouter()
 
 	// Two daemons, each carrying one session, under different accounts.
 	daemonA := &liveDaemon{machineID: "machine-a", account: "acct-a"}
@@ -21,7 +22,7 @@ func TestLiveSessionsListOnlyOwnAccount(t *testing.T) {
 	mux := NewRouter(r)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/live/sessions", nil)
-	req.Header.Set("Authorization", "Bearer acct-a:secret")
+	req.Header.Set("Authorization", "Bearer "+mintLiveJWT(t, "acct-a", time.Now().Add(time.Hour)))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 

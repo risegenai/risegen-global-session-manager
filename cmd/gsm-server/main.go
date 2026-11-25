@@ -44,8 +44,9 @@ func main() {
 	// HTTP router — pass nil session if Cassandra is unavailable;
 	// healthz reports status, data endpoints return 503.
 	router := handlers.NewRouter(&handlers.Router{
-		Cassandra: sess,
-		Logger:    logger,
+		Cassandra:     sess,
+		Logger:        logger,
+		JWTSigningKey: getEnv("GLOBAL_JWT_SIGNING_KEY", "dev-only-global-jwt-signing-key-change-me"),
 	})
 
 	addr := getEnv("GSM_ADDR", ":8091")
