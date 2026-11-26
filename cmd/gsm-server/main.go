@@ -31,7 +31,7 @@ func main() {
 	cassandraHosts := strings.Split(getEnv("GSM_CASSANDRA_HOSTS", "127.0.0.1:9042"), ",")
 	cassandraKeyspace := getEnv("GSM_CASSANDRA_KEYSPACE", "global_sessions")
 
-	sess, err := cassandra.Connect(cassandraHosts, cassandraKeyspace, logger)
+	sess, err := cassandra.ConnectWithRetry(cassandraHosts, cassandraKeyspace, logger, 24, 5*time.Second, cassandra.Connect)
 	if err != nil {
 		logger.Warn("gsm: cassandra unavailable, starting without persistence", "error", err)
 	} else {
@@ -44,8 +44,9 @@ func main() {
 	// HTTP router — pass nil session if Cassandra is unavailable;
 	// healthz reports status, data endpoints return 503.
 	router := handlers.NewRouter(&handlers.Router{
-		Cassandra: sess,
-		Logger:    logger,
+		Cassandra:     sess,
+		Logger:        logger,
+		JWTSigningKey: getEnv("GLOBAL_JWT_SIGNING_KEY", "dev-only-global-jwt-signing-key-change-me"),
 	})
 
 	addr := getEnv("GSM_ADDR", ":8091")
